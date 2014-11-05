@@ -32,7 +32,7 @@ import org.apache.spark.util.{CompletionIterator, Utils}
 private[spark]
 final class ShuffleBlockFetcherIterator(
     context: TaskContext,
-    blockTransferService: BlockTransferService,
+    shuffleClient: ShuffleClient,
     blockManager: BlockManager,
     blocksByAddress: Seq[(BlockManagerId, Seq[(BlockId, Long)])],
     serializer: Serializer,
@@ -41,7 +41,7 @@ final class ShuffleBlockFetcherIterator(
 
   val shuffleRawBlockFetcherItr = new ShuffleRawBlockFetcherIterator(
     context,
-    blockTransferService,
+    shuffleClient,
     blockManager,
     blocksByAddress,
     maxBytesInFlight)
