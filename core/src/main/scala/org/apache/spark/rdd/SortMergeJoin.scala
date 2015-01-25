@@ -24,9 +24,13 @@ import scala.reflect.ClassTag
 import org.apache.spark._
 import org.apache.spark.serializer.Serializer
 import org.apache.spark.shuffle.ShuffleHandle
-import org.apache.spark.util.Utils
-import org.apache.spark.util.collection._
 
+private[spark] object JoinType extends Enumeration {
+
+  type JoinType = Value
+
+  val INNER, LEFTOUTER, RIGHTOUTER = Value
+}
 private[spark] case class ShuffleJoinSplitDep(handle: ShuffleHandle) extends Serializable
 
 private[spark] class JoinPartition(idx: Int, val left: ShuffleJoinSplitDep, val right: ShuffleJoinSplitDep)
@@ -37,12 +41,11 @@ private[spark] class JoinPartition(idx: Int, val left: ShuffleJoinSplitDep, val 
 }
 
 private[spark] class SortMergeJoin[K, L, R, PAIR <: Product2[_, _]](
-    left: RDD[(K, L)], right: RDD[(K, R)], part: Partitioner)
+    left: RDD[(K, L)], right: RDD[(K, R)], part: Partitioner, joinType: JoinType.Value)
     (implicit kt: ClassTag[K], lt: ClassTag[L], rt: ClassTag[R], keyOrdering: Ordering[K])
   extends RDD[(K, PAIR)](left.context, Nil) with Logging {
 
-  // Ordering is necessary. SortMergeJoin needs it to prefetch a key without
-  // loading its value to avoid OOM.
+  // Ordering is necessary. SortMergeJoin needs to Sort by Key
   require(keyOrdering != null, "No implicit Ordering defined for " + kt.runtimeClass)
 
   private var serializer: Option[Serializer] = None
@@ -78,6 +81,18 @@ private[spark] class SortMergeJoin[K, L, R, PAIR <: Product2[_, _]](
 
   override val partitioner: Some[Partitioner] = Some(part)
 
+  private def internalCompute(leftIter: Iterator[Product2[K, L]], rightIter: Iterator[Product2[K, R]]):
+  Iterator[(K, PAIR)] = {
+  }
+
+  private def leftOuterCompute(leftIter: Iterator[Product2[K, L]], rightIter: Iterator[Product2[K, R]]):
+  Iterator[(K, PAIR)] = {
+  }
+
+  private def rightOuterCompute(leftIter: Iterator[Product2[K, L]], rightIter: Iterator[Product2[K, R]]):
+  Iterator[(K, PAIR)] = {
+  }
+
   override def compute(s: Partition, context: TaskContext): Iterator[(K, PAIR)] = {
     val sparkConf = SparkEnv.get.conf
     val split = s.asInstanceOf[JoinPartition]
@@ -87,6 +102,13 @@ private[spark] class SortMergeJoin[K, L, R, PAIR <: Product2[_, _]](
     val rightIter = SparkEnv.get.shuffleManager
       .getReader(split.right.handle,  split.index, split.index + 1, context)
       .read()
-
+    joinType match{
+      case JoinType.INNER =>
+        internalCompute(leftIter, rightIter)
+      case JoinType.LEFTOUTER =>
+        leftOuterCompute(leftIter, rightIter)
+      case JoinType.RIGHTOUTER =>
+        rightOuterCompute(leftIter, rightIter)
+    }
   }
 }

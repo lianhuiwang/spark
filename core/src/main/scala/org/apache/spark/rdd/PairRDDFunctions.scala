@@ -495,7 +495,7 @@ class PairRDDFunctions[K, V](self: RDD[(K, V)])
   }
 
   def sortMergeJoin[W: ClassTag](other: RDD[(K, W)], partitioner: Partitioner): RDD[(K, (V, W))] = {
-    new SortMergeJoin[K, V, W, (V, W)](self, other, partitioner)
+    new SortMergeJoin[K, V, W, (V, W)](self, other, partitioner, JoinType.INNER)
   }
 
   /**
