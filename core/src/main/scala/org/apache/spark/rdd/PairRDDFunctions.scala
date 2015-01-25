@@ -486,6 +486,18 @@ class PairRDDFunctions[K, V](self: RDD[(K, V)])
     )
   }
 
+  def sortMergeJoin[W: ClassTag](other: RDD[(K, W)]): RDD[(K, (V, W))] = {
+    sortMergeJoin(other, defaultPartitioner(self, other))
+  }
+
+  def sortMergeJoin[W: ClassTag](other: RDD[(K, W)], numPartitions: Int): RDD[(K, (V, W))] = {
+    sortMergeJoin(other, new HashPartitioner(numPartitions))
+  }
+
+  def sortMergeJoin[W: ClassTag](other: RDD[(K, W)], partitioner: Partitioner): RDD[(K, (V, W))] = {
+    new SortMergeJoin[K, V, W, (V, W)](self, other, partitioner)
+  }
+
   /**
    * Perform a left outer join of `this` and `other`. For each element (k, v) in `this`, the
    * resulting RDD will either contain all pairs (k, (v, Some(w))) for w in `other`, or the
