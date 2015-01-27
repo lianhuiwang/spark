@@ -81,34 +81,115 @@ private[spark] class SortMergeJoin[K, L, R, PAIR <: Product2[_, _]](
 
   override val partitioner: Some[Partitioner] = Some(part)
 
-  private def internalCompute(leftIter: Iterator[Product2[K, L]], rightIter: Iterator[Product2[K, R]]):
+  private def mergeValues[K,V](sorted: Iterator[Product2[K, V]]): Iterator[(K, Iterable[V])]={
+    new Iterator[(K, Iterable[V])] {
+
+      var cur:Product2[K, V] = null
+      var _hasNext: Boolean = false
+
+      def hasNext: Boolean = {
+        if (_hasNext) {
+          true
+        } else if (sorted.hasNext) {
+          cur = sorted.next()
+          _hasNext = true
+          true
+        } else {
+          false
+        }
+      }
+
+      def next(): (K, Iterable[V]) = {
+        val itr = new Iterable[V] {
+          override def iterator = new Iterator[V] {
+
+            def hasNext: Boolean = {
+              if (_hasNext) {
+                true
+              } else if (sorted.hasNext) {
+                _hasNext = true
+                val elem = sorted.next()
+                var keyIsSame:Boolean = false
+                if (keyOrdering.compare(elem._1, cur._1) == 0) {
+                  keyIsSame = true
+                }
+                cur = elem
+                keyIsSame
+              } else {
+                false
+              }
+            }
+
+            def next(): V = {
+              _hasNext = false
+              cur._2
+            }
+          }
+        }
+        (cur._1, itr)
+      }
+    }
+  }
+
+
+  private def internalCompute(leftIter: Iterator[(K, Iterable[L])], rightIter: Iterator[(K, Iterable[R])]):
+  Iterator[(K, PAIR)] = {
+    new Iterator[(K, Iterator[PAIR])] {
+
+      var leftCur:(K, Iterable[L]) = null
+      var rightCur:(K, Iterable[R]) = null
+      var _hasNext: Boolean = false
+
+      def hasNext: Boolean = {
+        if (_hasNext) {
+          true
+        } else if (leftIter.hasNext && rightIter.hasNext) {
+          leftCur = leftIter.next()
+          rightCur = rightIter.next()
+          if (keyOrdering.compare(leftCur._1, rightCur._1) == 0) {
+
+          }
+          _hasNext = true
+          true
+        } else {
+          false
+        }
+      }
+
+      def next(): (K, Iterator[PAIR]) = {
+
+      }
+    }
+  }
+
+    /*
+  private def leftOuterCompute(leftIter: Iterator[(K, Iterable[L])], rightIter: Iterator[(K, Iterable[R])]):
   Iterator[(K, PAIR)] = {
   }
 
-  private def leftOuterCompute(leftIter: Iterator[Product2[K, L]], rightIter: Iterator[Product2[K, R]]):
+  private def rightOuterCompute(leftIter: Iterator[(K, Iterable[L])], rightIter: Iterator[(K, Iterable[R])]):
   Iterator[(K, PAIR)] = {
   }
-
-  private def rightOuterCompute(leftIter: Iterator[Product2[K, L]], rightIter: Iterator[Product2[K, R]]):
-  Iterator[(K, PAIR)] = {
-  }
+  */
 
   override def compute(s: Partition, context: TaskContext): Iterator[(K, PAIR)] = {
     val sparkConf = SparkEnv.get.conf
     val split = s.asInstanceOf[JoinPartition]
     val leftIter = SparkEnv.get.shuffleManager
       .getReader(split.left.handle,  split.index, split.index + 1, context)
-      .read()
+      .read().asInstanceOf[Iterator[Product2[K, L]]]
     val rightIter = SparkEnv.get.shuffleManager
       .getReader(split.right.handle,  split.index, split.index + 1, context)
-      .read()
+      .read().asInstanceOf[Iterator[Product2[K, R]]]
+    val leftSorted = mergeValues[K,L](leftIter)
+    val rightSorted = mergeValues[K,R](rightIter)
     joinType match{
       case JoinType.INNER =>
-        internalCompute(leftIter, rightIter)
+        internalCompute(leftSorted,  rightSorted)
       case JoinType.LEFTOUTER =>
-        leftOuterCompute(leftIter, rightIter)
+        //leftOuterCompute(leftSorted, rightSorted)
       case JoinType.RIGHTOUTER =>
-        rightOuterCompute(leftIter, rightIter)
+        //rightOuterCompute(leftSorted, rightSorted)
     }
   }
 }
