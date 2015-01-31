@@ -132,7 +132,7 @@ private[spark] class SortMergeJoin[K, L, R, PAIR <: Product2[_, _]](
   }
 
 
-  private def internalCompute(leftIter: Iterator[(K, Iterable[L])], rightIter: Iterator[(K, Iterable[R])]):
+  private def internalCompute(leftIter: Iterator[Product2[K, L]], rightIter: Iterator[Product2[K, R]]):
   Iterator[(K, PAIR)] = {
     new Iterator[(K, Iterator[PAIR])] {
 
@@ -185,7 +185,7 @@ private[spark] class SortMergeJoin[K, L, R, PAIR <: Product2[_, _]](
     val rightSorted = mergeValues[K,R](rightIter)
     joinType match{
       case JoinType.INNER =>
-        internalCompute(leftSorted,  rightSorted)
+        internalCompute(leftIter,  rightIter)
       case JoinType.LEFTOUTER =>
         //leftOuterCompute(leftSorted, rightSorted)
       case JoinType.RIGHTOUTER =>
