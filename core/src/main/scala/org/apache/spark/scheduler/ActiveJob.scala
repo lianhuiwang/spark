@@ -47,6 +47,7 @@ private[spark] class ActiveJob(
       val results = new Array[Any](numPartitions)
       waiter.resultHandler = (index, res) => results(index) = res
       waiter.totalTasks = numPartitions
+      waiter.result = results
     }
   }
 }

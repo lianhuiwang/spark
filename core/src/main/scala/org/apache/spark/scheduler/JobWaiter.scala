@@ -25,6 +25,7 @@ private[spark] class JobWaiter[T](
     dagScheduler: DAGScheduler,
     val jobId: Int,
     var totalTasks: Int,
+    var result: Array[_],
     var resultHandler: (Int, T) => Unit)
   extends JobListener {
 

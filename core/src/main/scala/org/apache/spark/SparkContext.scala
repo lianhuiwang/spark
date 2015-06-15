@@ -1289,17 +1289,18 @@ class SparkContext(config: SparkConf) extends Logging with ExecutorAllocationCli
       func: (TaskContext, Iterator[T]) => U,
       partitions: Seq[Int],
       allowLocal: Boolean,
-      resultHandler: (Int, U) => Unit) {
+      resultHandler: (Int, U) => Unit): Array[U] = {
     if (dagScheduler == null) {
       throw new SparkException("SparkContext has been shutdown")
     }
     val callSite = getCallSite
     val cleanedFunc = clean(func)
     logInfo("Starting job: " + callSite.shortForm)
-    dagScheduler.runJob(rdd, cleanedFunc, partitions, callSite, allowLocal,
+    val result = dagScheduler.runJob(rdd, cleanedFunc, partitions, callSite, allowLocal,
       resultHandler, localProperties.get)
     progressBar.foreach(_.finishAll())
     rdd.doCheckpoint()
+    result
   }
 
   /**
@@ -1315,7 +1316,7 @@ class SparkContext(config: SparkConf) extends Logging with ExecutorAllocationCli
       ): Array[U] = {
     val results = new Array[U](partitions.size)
     runJob[T, U](rdd, func, partitions, allowLocal, (index, res) => results(index) = res)
-    results
+    //results
   }
 
   /**

@@ -508,12 +508,12 @@ class DAGScheduler(
 
     val jobId = nextJobId.getAndIncrement()
     if (partitions.size == 0) {
-      return new JobWaiter[U](this, jobId, 0, resultHandler)
+      return new JobWaiter[U](this, jobId, 0, new Array[U](partitions.size), resultHandler)
     }
 
     assert(partitions.size > 0)
     val func2 = func.asInstanceOf[(TaskContext, Iterator[_]) => _]
-    val waiter = new JobWaiter(this, jobId, partitions.size, resultHandler)
+    val waiter = new JobWaiter(this, jobId, partitions.size, new Array[U](partitions.size), resultHandler)
     eventProcessActor ! JobSubmitted(
       jobId, rdd, func2, partitions.toArray, allowLocal, callSite, waiter, properties)
     waiter
@@ -526,7 +526,7 @@ class DAGScheduler(
       callSite: CallSite,
       allowLocal: Boolean,
       resultHandler: (Int, U) => Unit,
-      properties: Properties = null)
+      properties: Properties = null): Array[U] =
   {
     val start = System.nanoTime
     val waiter = submitJob(rdd, func, partitions, callSite, allowLocal, resultHandler, properties)
@@ -534,6 +534,7 @@ class DAGScheduler(
       case JobSucceeded => {
         logInfo("Job %d finished: %s, took %f s".format
           (waiter.jobId, callSite.shortForm, (System.nanoTime - start) / 1e9))
+        waiter.result.asInstanceOf[Array[U]]
       }
       case JobFailed(exception: Exception) =>
         logInfo("Job %d failed: %s, took %f s".format
