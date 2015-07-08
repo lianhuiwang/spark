@@ -876,7 +876,7 @@ class DAGScheduler(
     if(isAutoPartition){
       if (stageIdToChildStage.contains(stage.id)) {
         val childStage = stageIdToChildStage.get(stage.id)
-        if (!childStage.get.isResetNumPartitions) {
+        if (!childStage.get.isResetNumPartitions && childStage.get.numPartitions > 1) {
           updateNumPartitionsOfStage(childStage.get, estimateNumPartitionsOfStage(childStage.get))
         } else {
           logInfo(stage + "'s child " + childStage + " have been estimated, partitionNumber=" +
