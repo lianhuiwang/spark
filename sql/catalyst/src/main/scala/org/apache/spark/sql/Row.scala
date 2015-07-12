@@ -17,7 +17,7 @@
 
 package org.apache.spark.sql
 
-import org.apache.spark.sql.catalyst.expressions.GenericRow
+import org.apache.spark.sql.catalyst.expressions.{GenericMutableRow, MutableRow, GenericRow}
 import org.apache.spark.sql.types.StructType
 
 object Row {
@@ -351,6 +351,17 @@ trait Row extends Serializable {
    * Make a copy of the current [[Row]] object.
    */
   def copy(): Row
+
+  def makeMutable(): MutableRow = {
+    val totalSize = length
+    val copiedValues = new Array[Any](totalSize)
+    var i = 0
+    while(i < totalSize) {
+      copiedValues(i) = apply(i)
+      i += 1
+    }
+    new GenericMutableRow(copiedValues)
+  }
 
   /** Returns true if there are any NULL values in this row. */
   def anyNull: Boolean = {

@@ -341,6 +341,11 @@ public final class UnsafeRow extends MutableRow {
   }
 
   @Override
+  public MutableRow makeMutable() {
+    return this;
+  }
+
+  @Override
   public boolean anyNull() {
     return BitSetMethods.anySet(baseObject, baseOffset, bitSetWidthInBytes);
   }
