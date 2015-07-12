@@ -17,6 +17,8 @@
 
 package org.apache.spark.sql.catalyst.expressions
 
+import org.apache.spark.sql.catalyst.InternalRow
+
 /**
  * Converts a [[InternalRow]] to another Row given a sequence of expression that define each
  * column of the new row. If the schema of the input row is specified, then the given expression
