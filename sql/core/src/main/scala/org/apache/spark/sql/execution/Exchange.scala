@@ -195,6 +195,8 @@ case class Exchange(newPartitioning: Partitioning, child: SparkPlan) extends Una
 private[sql] case class EnsureRequirements(sqlContext: SQLContext) extends Rule[SparkPlan] {
   // TODO: Determine the number of partitions.
   private def numPartitions: Int = sqlContext.conf.numShufflePartitions
+  private def targetPostShuffleInputSize: Long = sqlContext.conf.targetPostShuffleInputSize
+  private def adaptiveExecutionEnabled: Boolean = sqlContext.conf.adaptiveExecutionEnabled
 
   /**
    * Given a required distribution, returns a partitioning that satisfies that distribution.
@@ -239,6 +241,16 @@ private[sql] case class EnsureRequirements(sqlContext: SQLContext) extends Rule[
       }
     }
 
+    val hasExchange = children.exists(_.isInstanceOf[Exchange])
+    val supportedByCoordinator = children.forall {
+      case e @ Exchange(hash: HashPartitioning, _, _, _) => true
+      case child => child.outputPartitioning.isInstanceOf[HashPartitioning]
+    }
+    if (adaptiveExecutionEnabled) {
+
+    }
+
+
     // Now that we've performed any necessary shuffles, add sorts to guarantee output orderings:
     children = children.zip(requiredChildOrderings).map { case (child, requiredOrdering) =>
       if (requiredOrdering.nonEmpty) {
@@ -259,4 +271,8 @@ private[sql] case class EnsureRequirements(sqlContext: SQLContext) extends Rule[
   def apply(plan: SparkPlan): SparkPlan = plan.transformUp {
     case operator: SparkPlan => ensureDistributionAndOrdering(operator)
   }
+}
+
+class ExchangeCoordinator(numExchanges: Int, targetPostShuffleInputSize: Long) {
+
 }
