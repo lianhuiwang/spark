@@ -258,8 +258,9 @@ private[spark] class ApplicationMaster(
   }
 
   private def sparkContextStopped(sc: SparkContext) = {
-    reporterThread.interrupt()
-    reporterThread = null
+    if (allocator != null) {
+      allocator.requestTotalExecutorsWithPreferredLocalities(0, 0, Map.empty)
+    }
     sparkContextRef.compareAndSet(sc, null)
   }
 
