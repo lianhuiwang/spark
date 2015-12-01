@@ -258,8 +258,8 @@ private[spark] class ApplicationMaster(
   }
 
   private def sparkContextStopped(sc: SparkContext) = {
-    if (allocator != null) {
-      allocator.requestTotalExecutorsWithPreferredLocalities(0, 0, Map.empty)
+    if (amEndpoint != null) {
+      amEndpoint.askWithRetry[Boolean](RequestExecutors(0, 0, Map.empty))
     }
     sparkContextRef.compareAndSet(sc, null)
   }
