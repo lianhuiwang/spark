@@ -19,6 +19,7 @@ package org.apache.spark.scheduler
 
 import java.io.{Externalizable, ObjectInput, ObjectOutput}
 
+import org.apache.spark.MapOutputTracker
 import org.roaringbitmap.RoaringBitmap
 
 import org.apache.spark.storage.BlockManagerId
@@ -195,5 +196,26 @@ private[spark] object HighlyCompressedMapStatus {
       0
     }
     new HighlyCompressedMapStatus(loc, numNonEmptyBlocks, emptyBlocks, avgSize)
+  }
+}
+
+private[spark] class LargeMapStatus(var loc: BlockManagerId, var averageSize: Long)
+  extends MapStatus with Externalizable {
+
+  def this() = this(null, 0L)
+
+  override def getSizeForBlock(reduceId: Int): Long = averageSize
+
+  override def location: BlockManagerId = loc
+
+  override def writeExternal(out: ObjectOutput) {
+    loc.writeExternal(out)
+    out.writeByte(MapStatus.compressSize(averageSize))
+  }
+
+  override def readExternal(in: ObjectInput) {
+    loc = BlockManagerId(in)
+    val sizeInByte = in.readByte()
+    averageSize = MapStatus.decompressSize(sizeInByte)
   }
 }

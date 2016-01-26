@@ -77,7 +77,13 @@ private[spark] class Executor(
   }
 
   // Start worker thread pool
-  private val threadPool = ThreadUtils.newDaemonCachedThreadPool("Executor task launch worker")
+  private val threadPool = if (conf.getBoolean("spark.test.sort", false)) {
+    ThreadUtils.newDaemonFixedThreadPool(
+      conf.getInt("spark.executor.cores", 1), "Executor task launch worker")
+    } else {
+      ThreadUtils.newDaemonCachedThreadPool("Executor task launch worker")
+    }
+
   private val executorSource = new ExecutorSource(threadPool, executorId)
 
   if (!isLocal) {

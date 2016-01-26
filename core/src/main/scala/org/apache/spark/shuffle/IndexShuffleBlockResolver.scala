@@ -18,6 +18,7 @@
 package org.apache.spark.shuffle
 
 import java.io._
+import java.util.concurrent.ConcurrentHashMap
 
 import com.google.common.io.ByteStreams
 
@@ -44,6 +45,8 @@ private[spark] class IndexShuffleBlockResolver(
     _blockManager: BlockManager = null)
   extends ShuffleBlockResolver
   with Logging {
+
+  private lazy val isTestSort: Boolean = conf.getBoolean("spark.test.sort", false)
 
   private lazy val blockManager = Option(_blockManager).getOrElse(SparkEnv.get.blockManager)
 
@@ -121,6 +124,40 @@ private[spark] class IndexShuffleBlockResolver(
    * Write an index file with the offsets of each block, plus a final offset at the end for the
    * end of the output file. This will be used by getBlockData to figure out where each block
    * begins and ends.
+   * */
+  def writeIndexFile(shuffleId: Int, mapId: Int, lengths: Array[Long]): Unit = {
+    if (isTestSort) {
+      val offsets = new Array[Long](lengths.length + 1)
+      var offset = 0L
+      offsets(0) = offset
+      var i = 0
+      while (i < lengths.length) {
+        offset += lengths(i)
+        offsets(i + 1) = offset
+        i += 1
+      }
+      IndexShuffleBlockResolver.offsets.put(mapId, offsets)
+    } else {
+      val indexFile = getIndexFile(shuffleId, mapId)
+      val out = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(indexFile)))
+      Utils.tryWithSafeFinally {
+        // We take in lengths of each block, need to convert it to offsets.
+        var offset = 0L
+        out.writeLong(offset)
+        for (length <- lengths) {
+          offset += length
+          out.writeLong(offset)
+        }
+      } {
+        out.close()
+      }
+    }
+  }
+
+  /**
+   * Write an index file with the offsets of each block, plus a final offset at the end for the
+   * end of the output file. This will be used by getBlockData to figure out where each block
+   * begins and ends.
    *
    * It will commit the data and index file as an atomic operation, use the existing ones, or
    * replace them with new ones.
@@ -182,20 +219,27 @@ private[spark] class IndexShuffleBlockResolver(
   override def getBlockData(blockId: ShuffleBlockId): ManagedBuffer = {
     // The block is actually going to be a range of a single map output file for this map, so
     // find out the consolidated file, then the offset within that from our index
-    val indexFile = getIndexFile(blockId.shuffleId, blockId.mapId)
+    if (isTestSort) {
+      val offsets = IndexShuffleBlockResolver.offsets.get(blockId.mapId)
+      val offset = offsets(blockId.reduceId)
+      val len = offsets(blockId.reduceId + 1) - offset
+      new FileSegmentManagedBuffer(transportConf, getDataFile(blockId.shuffleId, blockId.mapId), offset, len)
+    } else {
+      val indexFile = getIndexFile(blockId.shuffleId, blockId.mapId)
 
-    val in = new DataInputStream(new FileInputStream(indexFile))
-    try {
-      ByteStreams.skipFully(in, blockId.reduceId * 8)
-      val offset = in.readLong()
-      val nextOffset = in.readLong()
-      new FileSegmentManagedBuffer(
-        transportConf,
-        getDataFile(blockId.shuffleId, blockId.mapId),
-        offset,
-        nextOffset - offset)
-    } finally {
-      in.close()
+      val in = new DataInputStream(new FileInputStream(indexFile))
+      try {
+        ByteStreams.skipFully(in, blockId.reduceId * 8)
+        val offset = in.readLong()
+        val nextOffset = in.readLong()
+        new FileSegmentManagedBuffer(
+          transportConf,
+          getDataFile(blockId.shuffleId, blockId.mapId),
+          offset,
+          nextOffset - offset)
+      } finally {
+        in.close()
+      }
     }
   }
 
@@ -208,4 +252,6 @@ private[spark] object IndexShuffleBlockResolver {
   // shuffle outputs for several reduces are glommed into a single file.
   // TODO: Avoid this entirely by having the DiskBlockObjectWriter not require a BlockId.
   val NOOP_REDUCE_ID = 0
+
+  val offsets = new ConcurrentHashMap[Int, Array[Long]]()
 }

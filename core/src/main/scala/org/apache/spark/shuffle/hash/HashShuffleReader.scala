@@ -18,9 +18,10 @@
 package org.apache.spark.shuffle.hash
 
 import org.apache.spark._
+import org.apache.spark.network.buffer.ManagedBuffer
 import org.apache.spark.serializer.Serializer
 import org.apache.spark.shuffle.{BaseShuffleHandle, ShuffleReader}
-import org.apache.spark.storage.{BlockManager, ShuffleBlockFetcherIterator}
+import org.apache.spark.storage.{BufferReleasingInputStream, BlockManager, ShuffleBlockFetcherIterator}
 import org.apache.spark.util.CompletionIterator
 import org.apache.spark.util.collection.ExternalSorter
 
@@ -38,8 +39,62 @@ private[spark] class HashShuffleReader[K, C](
 
   private val dep = handle.dependency
 
-  /** Read the combined key-values for this reduce task */
+  private val isTestSort: Boolean = SparkEnv.get.conf.getBoolean("spark.test.sort", false)
+
   override def read(): Iterator[Product2[K, C]] = {
+    if (isTestSort) {
+      readForTestSort()
+    } else {
+      read0()
+    }
+  }
+
+  def readForTestSort(): Iterator[Product2[K, C]] = {
+    val blockFetcherItr = new ShuffleBlockFetcherIterator(
+      context,
+      blockManager.shuffleClient,
+      blockManager,
+      mapOutputTracker.getMapSizesByExecutorId(handle.shuffleId, startPartition),
+      // Note: we use getSizeAsMb when no suffix is provided for backwards compatibility
+      SparkEnv.get.conf.getSizeAsMb("spark.reducer.maxSizeInFlight", "48m") * 1024 * 1024)
+
+    val recordIter = blockFetcherItr.flatMap { case (blockId, buffer) =>
+      Iterator(buffer)
+    }
+    /*
+    // Wrap the streams for compression based on configuration
+    val wrappedStreams = blockFetcherItr.map { case (blockId, buffer) =>
+      blockManager.wrapForCompression(blockId, inputStream)
+    }
+
+    //val ser = Serializer.getSerializer(dep.serializer)
+    //val serializerInstance = ser.newInstance()
+
+    // Create a key/value iterator for each stream
+    val recordIter = wrappedStreams.flatMap { wrappedStream =>
+      // Note: the asKeyValueIterator below wraps a key/value iterator inside of a
+      // NextIterator. The NextIterator makes sure that close() is called on the
+      // underlying InputStream when all records have been read.
+      //serializerInstance.deserializeStream(wrappedStream).asKeyValueIterator
+      wrappedStream
+    }*/
+
+    // Update the context task metrics for each record read.
+    val readMetrics = context.taskMetrics.createShuffleReadMetricsForDependency()
+    val metricIter = CompletionIterator[ManagedBuffer, Iterator[ManagedBuffer]](
+      recordIter.map(record => {
+        readMetrics.incRecordsRead(1)
+        record
+      }),
+      context.taskMetrics().updateShuffleReadMetrics())
+
+    // An interruptible iterator must be used here in order to support task cancellation
+    val interruptibleIter = new InterruptibleIterator[ManagedBuffer](context, metricIter)
+    interruptibleIter.map(buf => (0L, buf).asInstanceOf[(K, C)])
+  }
+
+  /** Read the combined key-values for this reduce task */
+  def read0(): Iterator[Product2[K, C]] = {
     val blockFetcherItr = new ShuffleBlockFetcherIterator(
       context,
       blockManager.shuffleClient,
@@ -49,8 +104,9 @@ private[spark] class HashShuffleReader[K, C](
       SparkEnv.get.conf.getSizeAsMb("spark.reducer.maxSizeInFlight", "48m") * 1024 * 1024)
 
     // Wrap the streams for compression based on configuration
-    val wrappedStreams = blockFetcherItr.map { case (blockId, inputStream) =>
-      blockManager.wrapForCompression(blockId, inputStream)
+    val wrappedStreams = blockFetcherItr.map { case (blockId, buf) =>
+      blockManager.wrapForCompression(blockId,
+        new BufferReleasingInputStream(buf.createInputStream(), blockFetcherItr))
     }
 
     val ser = Serializer.getSerializer(dep.serializer)

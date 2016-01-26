@@ -23,7 +23,7 @@ import java.util.concurrent.LinkedBlockingQueue
 import scala.collection.mutable.{ArrayBuffer, HashSet, Queue}
 import scala.util.control.NonFatal
 
-import org.apache.spark.{Logging, SparkException, TaskContext}
+import org.apache.spark.{SparkEnv, Logging, SparkException, TaskContext}
 import org.apache.spark.network.buffer.ManagedBuffer
 import org.apache.spark.network.shuffle.{BlockFetchingListener, ShuffleClient}
 import org.apache.spark.shuffle.FetchFailedException
@@ -54,7 +54,7 @@ final class ShuffleBlockFetcherIterator(
     blockManager: BlockManager,
     blocksByAddress: Seq[(BlockManagerId, Seq[(BlockId, Long)])],
     maxBytesInFlight: Long)
-  extends Iterator[(BlockId, InputStream)] with Logging {
+  extends Iterator[(BlockId, ManagedBuffer)] with Logging {
 
   import ShuffleBlockFetcherIterator._
 
@@ -101,6 +101,8 @@ final class ShuffleBlockFetcherIterator(
   /** Current bytes in flight from our requests */
   private[this] var bytesInFlight = 0L
 
+  private[this] val isTestSort: Boolean = SparkEnv.get.conf.getBoolean("spark.test.sort", false)
+
   private[this] val shuffleMetrics = context.taskMetrics().createShuffleReadMetricsForDependency()
 
   /**
@@ -115,10 +117,13 @@ final class ShuffleBlockFetcherIterator(
   // The currentResult is set to null to prevent releasing the buffer again on cleanup()
   private[storage] def releaseCurrentResultBuffer(): Unit = {
     // Release the current buffer if necessary
-    currentResult match {
-      case SuccessFetchResult(_, _, _, buf) => buf.release()
-      case _ =>
+    if (!isTestSort) {
+      currentResult match {
+        case SuccessFetchResult(_, _, _, buf) => buf.release()
+        case _ =>
+      }
     }
+
     currentResult = null
   }
 
@@ -128,15 +133,18 @@ final class ShuffleBlockFetcherIterator(
   private[this] def cleanup() {
     isZombie = true
     releaseCurrentResultBuffer()
-    // Release buffers in the results queue
-    val iter = results.iterator()
-    while (iter.hasNext) {
-      val result = iter.next()
-      result match {
-        case SuccessFetchResult(_, _, _, buf) => buf.release()
-        case _ =>
+    if (!isTestSort) {
+      // Release buffers in the results queue
+      val iter = results.iterator()
+      while (iter.hasNext) {
+        val result = iter.next()
+        result match {
+          case SuccessFetchResult(_, _, _, buf) => buf.release()
+          case _ =>
+        }
       }
     }
+
   }
 
   private[this] def sendRequest(req: FetchRequest) {
@@ -283,7 +291,7 @@ final class ShuffleBlockFetcherIterator(
    *
    * Throws a FetchFailedException if the next block could not be fetched.
    */
-  override def next(): (BlockId, InputStream) = {
+  override def next(): (BlockId, ManagedBuffer) = {
     numBlocksProcessed += 1
     val startFetchWait = System.currentTimeMillis()
     currentResult = results.take()
@@ -307,7 +315,8 @@ final class ShuffleBlockFetcherIterator(
 
       case SuccessFetchResult(blockId, address, _, buf) =>
         try {
-          (result.blockId, new BufferReleasingInputStream(buf.createInputStream(), this))
+          //(result.blockId, new BufferReleasingInputStream(buf.createInputStream(), this))
+          (result.blockId, buf)
         } catch {
           case NonFatal(t) =>
             throwFetchFailedException(blockId, address, t)
@@ -329,7 +338,7 @@ final class ShuffleBlockFetcherIterator(
 /**
  * Helper class that ensures a ManagedBuffer is release upon InputStream.close()
  */
-private class BufferReleasingInputStream(
+private[spark] class BufferReleasingInputStream(
     private val delegate: InputStream,
     private val iterator: ShuffleBlockFetcherIterator)
   extends InputStream {
