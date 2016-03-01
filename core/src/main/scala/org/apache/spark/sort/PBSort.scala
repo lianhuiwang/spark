@@ -52,7 +52,7 @@ object PBSort extends Logging {
 
       //networkSemaphore.acquire()
 
-      val codec = new org.apache.spark.io.LZFCompressionCodec(new SparkConf)
+      //val codec = new org.apache.spark.io.LZFCompressionCodec(new SparkConf)
       var memoryAddress = sortBuffer.address
       val buf100 = new Array[Byte](100)
 
@@ -64,7 +64,8 @@ object PBSort extends Logging {
           case buf: NettyManagedBuffer =>
             val bytebuf = buf.convertToNetty().asInstanceOf[ByteBuf]
 
-            val is = codec.compressedInputStream(new ByteBufInputStream(bytebuf))
+            //val is = codec.compressedInputStream(new ByteBufInputStream(bytebuf))
+            val is = new ByteBufInputStream(bytebuf)
             var stop = false
             while (!stop) {
               val read0 = is.read(buf100)
@@ -82,8 +83,9 @@ object PBSort extends Logging {
             val fs = new FileInputStream(buf.getFile)
             fs.skip(buf.getOffset)
 
-            val is = codec.compressedInputStream(
-              new BufferedInputStream(ByteStreams.limit(fs, buf.size()), 128 * 1024))
+            //val is = codec.compressedInputStream(
+            //  new BufferedInputStream(ByteStreams.limit(fs, buf.size()), 128 * 1024))
+            val is = new BufferedInputStream(ByteStreams.limit(fs, buf.size()), 128 * 1024)
             var stop = false
             while (!stop) {
               val read0 = is.read(buf100)

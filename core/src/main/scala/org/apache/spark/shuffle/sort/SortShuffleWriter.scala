@@ -80,10 +80,10 @@ private[spark] class SortShuffleWriter[K, V, C](
     //val pair = new MutablePair[Long, Long]
 
     val baseAddress = SortUtils.sortBuffers.get().address
-    val out = new BufferedOutputStream(new FileOutputStream(outputFile), fileBufferSize)
+    var out = new BufferedOutputStream(new FileOutputStream(outputFile), fileBufferSize)
     val buf = new Array[Byte](100)
 
-    val codec = new org.apache.spark.io.LZFCompressionCodec(new SparkConf)
+    //val codec = new org.apache.spark.io.LZFCompressionCodec(new SparkConf)
 
     dep.partitioner match {
       case p: org.apache.spark.sort.DaytonaPartitioner =>
@@ -165,15 +165,15 @@ private[spark] class SortShuffleWriter[K, V, C](
       case p: org.apache.spark.sort.IndyPartitionerPB =>
         assert(numRecords <= pointers.length)
 
-        var compressedOut = codec.compressedOutputStream(out)
+        //var compressedOut = codec.compressedOutputStream(out)
         var lastFileLen = 0L
 
         while (i < numRecords) {
           val pid = p.getPartitionSpecialized(pointers(i))
           if (pid != prevPid) {
             // This is a new pid. update the index.
-            compressedOut.flush()
-            compressedOut.close()
+            out.flush()
+            out.close()
 
             val currentFileLen = outputFile.length()
             partitionLengths(prevPid) = currentFileLen - lastFileLen
@@ -181,19 +181,19 @@ private[spark] class SortShuffleWriter[K, V, C](
             writeMetrics.incShuffleBytesWritten(partitionLengths(prevPid))
             prevPid = pid
 
-            val out1 = new BufferedOutputStream(new FileOutputStream(outputFile, true), fileBufferSize)
-            compressedOut = codec.compressedOutputStream(out1)
+            out = new BufferedOutputStream(new FileOutputStream(outputFile, true), fileBufferSize)
+            //compressedOut = codec.compressedOutputStream(out1)
           }
 
           val addr = pointers(i)
           UNSAFE.copyMemory(null, addr, buf, BYTE_ARRAY_BASE_OFFSET, 100)
-          compressedOut.write(buf)
+          out.write(buf)
           totalWritten += 100
           i += 1
         }
 
-        compressedOut.flush()
-        compressedOut.close()
+        out.flush()
+        out.close()
         val currentFileLen = outputFile.length()
         partitionLengths(prevPid) = currentFileLen - lastFileLen
         writeMetrics.incShuffleBytesWritten(partitionLengths(prevPid))
