@@ -128,7 +128,14 @@ class SQLContext private[sql](
   protected[sql] def planner: SparkPlanner = sessionState.planner
   protected[sql] def continuousQueryManager = sessionState.continuousQueryManager
   protected[sql] def prepareForExecution: RuleExecutor[SparkPlan] =
-    sessionState.prepareForExecution
+    if (conf.adaptiveExecution2Enabled) {
+      sessionState.prepareForAdaptiveExecution
+    } else {
+      sessionState.prepareForExecution
+    }
+
+  protected[sql] def codegenForExecution: RuleExecutor[SparkPlan] =
+    sessionState.codegenForExecution
 
   /**
    * An interface to register custom [[org.apache.spark.sql.util.QueryExecutionListener]]s
