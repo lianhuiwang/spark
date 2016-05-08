@@ -1,10 +1,13 @@
 package org.apache.spark.sql.execution.adaptive
 
+import java.util.concurrent.atomic.AtomicLong
+
 import org.apache.spark.sql.SQLContext
 import org.apache.spark.sql.catalyst.expressions.SortOrder
 import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.command.ExecutedCommand
 import org.apache.spark.sql.execution.exchange.ShuffleExchange
 
 /**
@@ -13,14 +16,22 @@ import org.apache.spark.sql.execution.exchange.ShuffleExchange
 case class QueryFragmentTransformer(sqlContext: SQLContext,maxIterations: Int = 100)
   extends Rule[SparkPlan] {
 
+  private val nextFragmentId = new AtomicLong(0)
+
   def apply(plan: SparkPlan): SparkPlan = {
     val newPlan = plan.transformUp {
       case operator: SparkPlan => withQueryFragment(operator)
     }
-    val childFragments = Utils.findChildFragment(newPlan)
-    val newFragment = new QueryFragment(childFragments, true)
-    newFragment.setRootPlan(newPlan)
-    newFragment
+    if (newPlan.isInstanceOf[ExecutedCommand]) {
+      newPlan
+    } else {
+      val childFragments = Utils.findChildFragment(newPlan)
+      val newFragment = new RootQueryFragment(childFragments,
+        nextFragmentId.getAndIncrement(), true)
+      childFragments.foreach(child => child.setParentFragment(newFragment))
+      newFragment.setRootPlan(newPlan)
+      newFragment
+    }
   }
 
   private[this] def withQueryFragment(operator: SparkPlan): SparkPlan = {
@@ -59,7 +70,9 @@ case class QueryFragmentTransformer(sqlContext: SQLContext,maxIterations: Int = 
           case (e: ShuffleExchange, _) =>
             // This child is an Exchange, we need to add the fragment.
             val childFragments = Utils.findChildFragment(e)
-            val newFragment = new QueryFragment(childFragments, false)
+            val newFragment = new UnaryQueryFragment(childFragments,
+              nextFragmentId.getAndIncrement(), false)
+            childFragments.foreach(child => child.setParentFragment(newFragment))
             val fragmentInput = FragmentInput(newFragment)
             fragmentInput.setInputPlan(e)
             newFragment.setExchange(e)

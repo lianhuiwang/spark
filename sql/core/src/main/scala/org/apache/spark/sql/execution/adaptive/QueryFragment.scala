@@ -1,7 +1,10 @@
 package org.apache.spark.sql.execution.adaptive
 
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.{LinkedBlockingDeque, BlockingQueue}
 import java.util.{HashMap => JHashMap, Map => JMap}
 
+import scala.concurrent.ExecutionContext.Implicits.global
 import scala.collection.mutable.ArrayBuffer
 
 import org.apache.spark.{MapOutputStatistics, SimpleFutureAction, ShuffleDependency}
@@ -20,22 +23,27 @@ import org.apache.spark.sql.types.LongType
  * An QueryFragment is a basic execution unit that could be optimized
  * According to statistics of children fragments.
  */
-case class QueryFragment (children: Seq[QueryFragment], isRoot: Boolean = false) extends SparkPlan {
+trait QueryFragment extends SparkPlan {
+
+  def children: Seq[QueryFragment]
+  def isRoot: Boolean
+  def id: Long
 
   private[this] var exchange: ShuffleExchange = null
 
-  private[this] var rootPlan: SparkPlan = null
+  protected[this] var rootPlan: SparkPlan = null
 
   private[this] var fragmentInput: FragmentInput = null
+
+  private[this] var parentFragment: QueryFragment = null
+
+  var nextChildIndex: Int = 0
 
   private[this] val fragmentsIndex: JMap[QueryFragment, Integer] =
     new JHashMap[QueryFragment, Integer](children.size)
 
   private[this] val shuffleDependencies =
     new Array[ShuffleDependency[Int, InternalRow, InternalRow]](children.size)
-
-  private[this] val submittedStageFutures =
-    new Array[SimpleFutureAction[MapOutputStatistics]](children.size)
 
   private[this] val mapOutputStatistics = new Array[MapOutputStatistics](children.size)
 
@@ -50,6 +58,12 @@ case class QueryFragment (children: Seq[QueryFragment], isRoot: Boolean = false)
     exchange
   }
 
+  private[sql] def setParentFragment(fragment: QueryFragment) = {
+    this.parentFragment = fragment
+  }
+
+  private[sql] def getParentFragment() = parentFragment
+
   private[sql] def setFragmentInput(fragmentInput: FragmentInput) = {
     this.fragmentInput = fragmentInput
   }
@@ -62,89 +76,92 @@ case class QueryFragment (children: Seq[QueryFragment], isRoot: Boolean = false)
 
   private[sql] def getExchange(): ShuffleExchange = exchange
 
-  private[sql] def setRootPlan(plan: SparkPlan) = {
-    this.rootPlan = plan
+  private[sql] def setRootPlan(root: SparkPlan) = {
+    this.rootPlan = root
   }
 
-  override protected def doExecute(): RDD[InternalRow] = {
-    if (!children.isEmpty) {
-      submitChildrenFragments()
-      val executedPlan = if (isRoot) {
-        rootPlan
-      } else {
-        exchange
-      }
-      // Optimize plan
-      val optimizedPlan = executedPlan.transformDown {
-        case operator @ SortMergeJoin(leftKeys, rightKeys, condition,
-        left@Sort(_, _, _, _), right@Sort(_, _, _, _)) => {
-          logInfo("Begin optimize join, operator =\n" + operator.toString)
-          val newOperator = optimizeJoin(operator, left, right)
-          logInfo("After optimize join, operator =\n" + newOperator.toString)
-          newOperator
-        }
+  protected[sql] def isAvailable: Boolean = nextChildIndex >= children.size
 
-        case agg @ TungstenAggregate(_, _, _, _, _, _, input @ FragmentInput(_))
-          if (!input.isOptimized())=> {
-          optimizeAggregate(agg, input)
-        }
 
-        case operator: SparkPlan => operator
-      }
+  protected def doExecute(): RDD[InternalRow] = null
 
-      if (isRoot) {
-        rootPlan = optimizedPlan
-      } else {
-        exchange = optimizedPlan.asInstanceOf[ShuffleExchange]
-      }
-    }
-    if (isRoot) {
-      rootPlan.execute()
+  protected[sql] def adaptiveExecute(): (ShuffleDependency[Int, InternalRow, InternalRow],
+    SimpleFutureAction[MapOutputStatistics]) = synchronized {
+    val executedPlan = sqlContext.codegenForExecution.execute(exchange)
+      .asInstanceOf[ShuffleExchange]
+    logInfo(s"== Submit Query Fragment ${id} Physical plan ==")
+    logInfo(stringOrError(executedPlan.toString))
+    val shuffleDependency = executedPlan.prepareShuffleDependency()
+    if (shuffleDependency.rdd.partitions.length != 0) {
+      val futureAction: SimpleFutureAction[MapOutputStatistics] =
+        sqlContext.sparkContext.submitMapStage[Int, InternalRow, InternalRow](shuffleDependency)
+      (shuffleDependency, futureAction)
+//      futureAction.onComplete {
+//        case scala.util.Success(statistics) =>
+//          logInfo(s"Query Fragment ${id} finished")
+//          this.getParentFragment().setChildCompleted(this, shuffleDependency, statistics)
+//        case scala.util.Failure(exception) =>
+//          logInfo(s"Query Fragment ${id} failed")
+//          this.getParentFragment().stageFailed(exception)
+//          throw exception
+//      }
     } else {
-      null
+      (shuffleDependency, null)
+      //this.getParentFragment().setChildCompleted(this, shuffleDependency, null)
+    }
+  }
+
+  protected[sql] def stageFailed(exception: Throwable): Unit = synchronized {
+    this.parentFragment.stageFailed(exception)
+  }
+
+  protected def stringOrError[A](f: => A): String =
+    try f.toString catch { case e: Throwable => e.toString }
+
+  protected[sql] def setChildCompleted(
+      child: QueryFragment,
+      shuffleDependency: ShuffleDependency[Int, InternalRow, InternalRow],
+      statistics: MapOutputStatistics): Unit = synchronized {
+    fragmentsIndex.put(child, this.nextChildIndex)
+    shuffleDependencies(this.nextChildIndex) = shuffleDependency
+    mapOutputStatistics(this.nextChildIndex) = statistics
+    this.nextChildIndex += 1
+  }
+
+  protected[sql] def optimizeOperator(): Unit = synchronized {
+    val executedPlan = if (isRoot) {
+      rootPlan
+    } else {
+      exchange
+    }
+    // Optimize plan
+    val optimizedPlan = executedPlan.transformDown {
+      case operator @ SortMergeJoin(leftKeys, rightKeys, condition,
+      left@Sort(_, _, _, _), right@Sort(_, _, _, _)) => {
+        logInfo("Begin optimize join, operator =\n" + operator.toString)
+        val newOperator = optimizeJoin(operator, left, right)
+        logInfo("After optimize join, operator =\n" + newOperator.toString)
+        newOperator
+      }
+
+      case agg @ TungstenAggregate(_, _, _, _, _, _, input @ FragmentInput(_))
+        if (!input.isOptimized())=> {
+        optimizeAggregate(agg, input)
+      }
+
+      case operator: SparkPlan => operator
+    }
+
+    if (isRoot) {
+      rootPlan = optimizedPlan
+    } else {
+      exchange = optimizedPlan.asInstanceOf[ShuffleExchange]
     }
   }
 
   private[this] def minNumPostShufflePartitions: Option[Int] = {
     val minNumPostShufflePartitions = sqlContext.conf.minNumPostShufflePartitions
     if (minNumPostShufflePartitions > 0) Some(minNumPostShufflePartitions) else None
-  }
-
-  private[this] def submitChildrenFragments() = {
-    // Submit all map stages
-    val numExchanges = children.size
-    var i = 0
-    while (i < numExchanges) {
-      children(i).execute()
-      fragmentsIndex.put(children(i), i)
-      val exchange = sqlContext.codegenForExecution.execute(children(i).getExchange())
-        .asInstanceOf[ShuffleExchange]
-      logInfo("== submit plan ==\n" + exchange.toString)
-      val shuffleDependency = exchange.prepareShuffleDependency()
-      shuffleDependencies(i) = shuffleDependency
-      if (shuffleDependency.rdd.partitions.length != 0) {
-        // submitMapStage does not accept RDD with 0 partition.
-        // So, we will not submit this dependency.
-        submittedStageFutures(i) = sqlContext.sparkContext.submitMapStage(shuffleDependency)
-      } else {
-        submittedStageFutures(i) = null
-      }
-
-      i += 1
-    }
-
-    // Wait for the finishes of those submitted map stages.
-    var j = 0
-    while (j < submittedStageFutures.length) {
-      // This call is a blocking call. If the stage has not finished, we will wait at here.
-      if (submittedStageFutures(j) != null) {
-        mapOutputStatistics(j) = submittedStageFutures(j).get()
-      } else {
-        mapOutputStatistics(j) = null
-      }
-
-      j += 1
-    }
   }
 
   private[this] def optimizeAggregate(agg: SparkPlan, input: FragmentInput): SparkPlan = {
@@ -252,3 +269,96 @@ case class QueryFragment (children: Seq[QueryFragment], isRoot: Boolean = false)
 
   override def simpleString: String = "QueryFragment"
 }
+
+case class RootQueryFragment (
+    children: Seq[QueryFragment],
+    id: Long,
+    isRoot: Boolean = false) extends QueryFragment {
+
+  private[this] var isThrowException = false
+
+  private[this] var exception: Throwable = null
+
+  private[this] val stopped = new AtomicBoolean(false)
+
+  protected[sql] override def stageFailed(exception: Throwable): Unit = {
+    isThrowException = true
+    this.exception = exception
+    stopped.set(true)
+  }
+
+  private val eventQueue: BlockingQueue[QueryFragment] = new LinkedBlockingDeque[QueryFragment]()
+
+  protected def executeFragment(child: QueryFragment) = {
+    val (shuffleDependency, futureAction) = child.adaptiveExecute()
+    val parent = child.getParentFragment()
+    if (futureAction != null) {
+      futureAction.onComplete {
+        case scala.util.Success(statistics) =>
+          logInfo(s"Query Fragment ${id} finished")
+          parent.setChildCompleted(child, shuffleDependency, statistics)
+          if (parent.isAvailable) {
+            eventQueue.add(parent)
+          }
+        case scala.util.Failure(exception) =>
+          logInfo(s"Query Fragment ${id} failed, exception is ${exception}")
+          parent.stageFailed(exception)
+      }
+    } else {
+      parent.setChildCompleted(child, shuffleDependency, null)
+      if (parent.isAvailable) {
+        eventQueue.add(parent)
+      }
+    }
+  }
+
+
+  protected override def doExecute(): RDD[InternalRow] = {
+    assert(isRoot == true)
+    isThrowException = false
+    stopped.set(false)
+    val children = Utils.findLeafFragment(this)
+    if (!children.isEmpty) {
+      children.foreach { child => executeFragment(child) }
+    } else {
+      stopped.set(true)
+    }
+
+    val executeThread = new Thread("Fragment execute") {
+      setDaemon(true)
+
+      override def run(): Unit = {
+        while (!stopped.get) {
+          val fragment = eventQueue.take()
+          fragment.optimizeOperator()
+          if (fragment.isInstanceOf[RootQueryFragment]) {
+            stopped.set(true)
+          } else {
+            executeFragment(fragment)
+          }
+
+        }
+      }
+    }
+    executeThread.start()
+    executeThread.join()
+    if (isThrowException) {
+      assert(this.exception != null)
+      throw exception
+    } else {
+      rootPlan.execute()
+    }
+  }
+
+  /** Returns a string representation of the nodes in this tree */
+  override def treeString: String =
+    rootPlan.generateTreeString(0, Nil, new StringBuilder).toString
+
+  override def simpleString: String = "QueryFragment"
+
+}
+
+case class UnaryQueryFragment (
+    children: Seq[QueryFragment],
+    id: Long,
+    isRoot: Boolean = false) extends QueryFragment {}

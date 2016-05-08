@@ -30,6 +30,21 @@ private[sql] object Utils extends Logging {
     result
   }
 
+  private[sql] def findLeafFragment(root: QueryFragment): Seq[QueryFragment] = {
+    val result = new ArrayBuffer[QueryFragment]
+    val queue = new Queue[QueryFragment]
+    queue.enqueue(root)
+    while (queue.nonEmpty) {
+      val current = queue.dequeue()
+      if (current.children.isEmpty) {
+        result += current
+      } else {
+        current.children.foreach(c => queue.enqueue(c))
+      }
+    }
+    result
+  }
+
   /**
    * Estimates partition start indices for post-shuffle partitions based on
    * mapOutputStatistics provided by all pre-shuffle stages.
@@ -56,9 +71,8 @@ private[sql] object Utils extends Logging {
       case None => advisoryTargetPostShuffleInputSize
     }
 
-    logInfo(
-      s"advisoryTargetPostShuffleInputSize: $advisoryTargetPostShuffleInputSize, " +
-        s"targetPostShuffleInputSize $targetPostShuffleInputSize.")
+    logInfo(s"advisoryTargetPostShuffleInputSize: $advisoryTargetPostShuffleInputSize, " +
+      s"targetPostShuffleInputSize $targetPostShuffleInputSize.")
 
     // Make sure we do get the same number of pre-shuffle partitions for those stages.
     val distinctNumPreShufflePartitions =
