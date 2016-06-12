@@ -17,8 +17,10 @@
 
 package org.apache.spark.sql.hive
 
+import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.catalyst.expressions.Literal._
 import org.apache.spark.sql.catalyst.planning._
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
@@ -58,16 +60,26 @@ private[hive] trait HiveStrategies {
    * Retrieves data using a HiveTableScan.  Partition pruning predicates are also detected and
    * applied.
    */
-  object HiveTableScans extends Strategy {
+  object HiveTableScans extends Strategy with Logging {
     def apply(plan: LogicalPlan): Seq[SparkPlan] = plan match {
       case PhysicalOperation(projectList, predicates, relation: MetastoreRelation) =>
         // Filter out all predicates that only deal with partition keys, these are given to the
         // hive table scan operator to be used for partition pruning.
         val partitionKeyIds = AttributeSet(relation.partitionKeys)
-        val (pruningPredicates, otherPredicates) = predicates.partition { predicate =>
-          !predicate.references.isEmpty &&
-          predicate.references.subsetOf(partitionKeyIds)
+        val otherPredicates = if (partitionKeyIds.isEmpty) {
+          predicates
+        } else {
+          predicates.filter { predicate => predicate.references.isEmpty ||
+            !predicate.references.subsetOf(partitionKeyIds) }
         }
+        val pruningPredicates = if (partitionKeyIds.isEmpty) {
+          Seq.empty[Expression]
+        } else {
+          predicates.map(pruneNoPartitionKeys(_, partitionKeyIds)).filterNot(TrueLiteral.equals(_))
+        }
+
+        logDebug("for HiveTableScans partitionKeyIds=" + partitionKeyIds + ", pruningPredicates="
+          + pruningPredicates.mkString("#") + ", otherPredicates=" + otherPredicates.mkString("#"))
 
         pruneFilterProject(
           projectList,
@@ -77,5 +89,49 @@ private[hive] trait HiveStrategies {
       case _ =>
         Nil
     }
+
+    def pruneNoPartitionKeys(
+        predicate: Expression,
+        partitionKeyIds: AttributeSet): Expression = {
+      predicate match {
+        case And(left, right) =>
+          val newLeft = pruneNoPartitionKeys(left, partitionKeyIds)
+          val newRight = pruneNoPartitionKeys(right, partitionKeyIds)
+          if (TrueLiteral.equals(newLeft) && TrueLiteral.equals(newRight)) {
+            TrueLiteral
+          } else if (TrueLiteral.equals(newLeft)) {
+            newRight
+          } else if (TrueLiteral.equals(newRight)) {
+            newLeft
+          } else {
+            And(newLeft, newRight)
+          }
+
+        case Or(left, right) =>
+          val newLeft = pruneNoPartitionKeys(left, partitionKeyIds)
+          val newRight = pruneNoPartitionKeys(right, partitionKeyIds)
+          if (TrueLiteral.equals(newLeft) || TrueLiteral.equals(newRight)) {
+            TrueLiteral
+          } else {
+            Or(newLeft, newRight)
+          }
+
+        case Not(child) =>
+          val newChild = pruneNoPartitionKeys(child, partitionKeyIds)
+          if (newChild.equals(TrueLiteral)) {
+            TrueLiteral
+          } else {
+            Not(newChild)
+          }
+
+        case other =>
+         if (other.references.nonEmpty && other.references.subsetOf(partitionKeyIds)) {
+           other
+         } else {
+           TrueLiteral
+         }
+      }
+    }
   }
+
 }

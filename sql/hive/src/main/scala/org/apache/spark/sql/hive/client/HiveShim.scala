@@ -24,6 +24,7 @@ import java.util.{ArrayList => JArrayList, List => JList, Map => JMap, Set => JS
 import java.util.concurrent.TimeUnit
 
 import scala.collection.JavaConverters._
+import scala.collection.mutable.ArrayBuffer
 import scala.util.control.NonFatal
 
 import org.apache.hadoop.fs.{FileSystem, Path}
@@ -509,21 +510,44 @@ private[client] class Shim_v0_13 extends Shim_v0_12 {
     // hive varchar is treated as catalyst string, but hive varchar can't be pushed down.
     val varcharKeys = table.getPartitionKeys.asScala
       .filter(col => col.getType.startsWith(serdeConstants.VARCHAR_TYPE_NAME) ||
-        col.getType.startsWith(serdeConstants.CHAR_TYPE_NAME))
+      col.getType.startsWith(serdeConstants.CHAR_TYPE_NAME))
       .map(col => col.getName).toSet
-
-    filters.collect {
+    def convertFilter(filter: Expression): String = filter match {
+      case And(left, right) =>
+        "(" + convertFilter(left) + " and " + convertFilter(right) + ")"
+      case Or(left, right) =>
+        "(" + convertFilter(left) + " or " + convertFilter(right) + ")"
+      case Not(child) =>
+        "(not " + convertFilter(child) + ")"
+      case Like(left, right) =>
+        convertFilter(left) + " like " + convertFilter(right)
+      case In(value, list) =>
+        convertFilter(value) + " in( " + list.map(convertFilter(_)).mkString(",") + ")"
       case op @ BinaryComparison(a: Attribute, Literal(v, _: IntegralType)) =>
         s"${a.name} ${op.symbol} $v"
       case op @ BinaryComparison(Literal(v, _: IntegralType), a: Attribute) =>
         s"$v ${op.symbol} ${a.name}"
       case op @ BinaryComparison(a: Attribute, Literal(v, _: StringType))
-          if !varcharKeys.contains(a.name) =>
+        if !varcharKeys.contains(a.name) =>
         s"""${a.name} ${op.symbol} "$v""""
       case op @ BinaryComparison(Literal(v, _: StringType), a: Attribute)
-          if !varcharKeys.contains(a.name) =>
+        if !varcharKeys.contains(a.name) =>
         s""""$v" ${op.symbol} ${a.name}"""
-    }.mkString(" and ")
+      case a: Attribute =>
+        s"${a.name}"
+      case _ =>
+        throw new AnalysisException(s"For getPartitionsByFilter failed to convert filter: $filter")
+    }
+    val filterValues = ArrayBuffer.empty[String]
+    filters.foreach { filter =>
+      try {
+        filterValues += convertFilter(filter)
+      } catch {
+        case e: Exception =>
+          // ignore
+      }
+    }
+    filterValues.mkString(" and ")
   }
 
   override def getPartitionsByFilter(
