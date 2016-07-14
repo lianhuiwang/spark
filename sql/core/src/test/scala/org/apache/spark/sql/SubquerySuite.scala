@@ -54,6 +54,7 @@ class SubquerySuite extends QueryTest with SharedSQLContext {
     t.createOrReplaceTempView("t")
   }
 
+  /*
   test("rdd deserialization does not crash [SPARK-15791]") {
     sql("select (select 1 as b) as b").rdd.count()
   }
@@ -318,15 +319,17 @@ class SubquerySuite extends QueryTest with SharedSQLContext {
           """.stripMargin),
         Nil)
 
-      checkAnswer(
-        sql(
+      // checkAnswer(
+       val q = sql(
           """
             | select c1 from t1
             | where (case when c2 IN (select 1 as one) then 1
             |             else 2 end) = c1
             |
-          """.stripMargin),
-        Row(1) :: Row(2) :: Nil)
+          """.stripMargin)
+      println("query=" + q.queryExecution)
+      assert(1 == 0)
+        // Row(1) :: Row(2) :: Nil)
 
       checkAnswer(
         sql(
@@ -570,5 +573,62 @@ class SubquerySuite extends QueryTest with SharedSQLContext {
       sql("select l.b, (select (r.c + count(*)) is null from r where l.a = r.c) from l"),
       Row(1.0, false) :: Row(1.0, false) :: Row(2.0, true) :: Row(2.0, true) ::
         Row(3.0, false) :: Row(5.0, true) :: Row(null, false) :: Row(null, true) :: Nil)
+  }
+
+ */
+
+  test("exists/in join reorder for tpcds Q23/Q94") {
+    withTempTable("t1", "t2", "t3") {
+      val df = (1 to 3).map(i => (i, i)).toDF("key", "value")
+      df.createOrReplaceTempView("t1")
+      df.createOrReplaceTempView("t2")
+      df.createOrReplaceTempView("t3")
+      df.createOrReplaceTempView("t4")
+      df.createOrReplaceTempView("t5")
+      val q = sql("select t1.key, t2.value, t3.value from t1, t2, t3 where t3.value = 1 " +
+        "and t1.key = t2.key and t1.key = t3.key ")
+      println("query==" + q.queryExecution)
+
+      spark.sqlContext.sparkContext.setLogLevel("TRACE")
+//      val x = df.selectExpr("key as c1", "value as c2").as("x")
+//      val y = df.selectExpr("key as c3", "value as c4").as("y")
+//      val z = df.selectExpr("key as c5", "value as c6").as("z")
+//      val q2 = x.join(y).join(z).where("x.c1=z.c5 and y.c3 = z.c6")
+//
+//      val q1 = sql("select t1.key, t2.value, t3.value from t1, t2, t3 where t3.value = 1 " +
+//        "and t1.key = t2.key and t1.key = t3.key ")
+//
+//      val q3 = sql("select t1.key, t2.value, t3.value from t1, t2, t3 where t3.value = 1 " +
+//        "and t1.key = t2.key and t1.value = t3.key ")
+//
+//      val q4 = sql("select t1.key, t2.value, t3.value from t1, t2, t3 where t3.value = 1 " +
+//        "and t2.value = 1 and t1.key = t2.key and t1.key = t3.key and " +
+//        "t1.value in (select value from t4)")
+
+//      val q5 = sql("select t1.key, t2.value, t3.value from t1, t2, t3 where " +
+//        " t1.value in (select value from t4) and t3.value = 1 " +
+//        "and t2.value = 1 and t1.key = t2.key and t1.key = t3.key")
+//      println("query=" + q5.queryExecution)
+
+      // q94
+
+
+      val q6 = sql("select t1.key, t2.value, t3.value from t1, t2, t3 where t3.value = 1 " +
+        "and t2.value = 1 and t1.key = t2.key and t1.key = t3.key" +
+        " and EXISTS (select * from t1 as tt where t1.key = tt.key) and " +
+        " NOT EXISTS(SELECT * FROM t5 where t1.key = t5.value)")
+
+      val q6 = sql("select t1.key, t2.value, t3.value from t1, t2, t3 where t3.value = 1 " +
+        "and t2.value = 1 and t1.key = t2.key and t1.key = t3.key" +
+        " and EXISTS (select * from t1 as tt where t1.key = tt.key and t1.key <> tt.value)")
+
+      val q7 = sql("select t1.key from t1 where t1.value in (select value from t1)")
+
+      val q7 = sql("select t1.key from t1 where EXISTS (select * from t1 as tt where" +
+        " tt.key = t1.key and t1.value <> tt.value) and " +
+      " NOT EXISTS(SELECT * FROM t5 where t1.key = t5.key)")
+
+//      println("query==" + q1.queryExecution)
+    }
   }
 }
