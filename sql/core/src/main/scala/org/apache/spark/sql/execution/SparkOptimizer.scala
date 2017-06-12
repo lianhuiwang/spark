@@ -33,7 +33,8 @@ class SparkOptimizer(
   override def batches: Seq[Batch] = (preOptimizationBatches ++ super.batches :+
     Batch("Optimize Metadata Only Query", Once, OptimizeMetadataOnlyQuery(catalog, conf)) :+
     Batch("Extract Python UDF from Aggregate", Once, ExtractPythonUDFFromAggregate) :+
-    Batch("Prune File Source Table Partitions", Once, PruneFileSourcePartitions)) ++
+    Batch("Prune File Source Table Partitions", Once, PruneFileSourcePartitions) :+
+    Batch("correlated optimizer", Once, CorrelatedOptimizer(conf))) ++
     postHocOptimizationBatches :+
     Batch("User Provided Optimizers", fixedPoint, experimentalMethods.extraOptimizations: _*)
 
